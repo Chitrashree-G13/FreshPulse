@@ -1,0 +1,3215 @@
+FRESHPULSE AI - TECHNICAL REPORT
+
+===== package.json =====
+{
+  "name": "react-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@supabase/supabase-js": "^2.117.3",
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "papaparse": "^5.7.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "react-is": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "recharts": "^3.10.1",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
+
+===== src\supabase.ts =====
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) ||
+  ''
+
+const supabaseKey =
+  (typeof import.meta !== 'undefined' && (import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env?.VITE_SUPABASE_ANON_KEY)) ||
+  (typeof process !== 'undefined' && (process.env?.VITE_SUPABASE_PUBLISHABLE_KEY || process.env?.VITE_SUPABASE_ANON_KEY)) ||
+  ''
+
+export const supabase = createClient(supabaseUrl, supabaseKey)
+
+===== src\testSupabase.ts =====
+import 'dotenv/config'
+import { config } from 'dotenv'
+config({ path: '.env.local' })
+
+import { supabase } from './supabase'
+
+async function testConnection() {
+  console.log('--- Testing Supabase Connection ---')
+
+  const tables = ['stores', 'products', 'inventory', 'sales'] as const
+
+  for (const table of tables) {
+    const { data, error, count } = await supabase
+      .from(table)
+      .select('*', { count: 'exact' })
+      .limit(5)
+
+    if (error) {
+      console.error(`[${table}] Error (${error.code}):`, error.message)
+    } else {
+      console.log(`[${table}] Count: ${count}, Sample items: ${data?.length || 0}`)
+      if (data && data.length > 0) {
+        console.log(`[${table}] Sample columns:`, Object.keys(data[0]))
+        console.log(`[${table}] Sample row:`, JSON.stringify(data[0], null, 2))
+      }
+    }
+  }
+}
+
+testConnection()
+
+===== src\services\supabaseService.ts =====
+/**
+ * FreshPulse AI — Supabase Database Integration Service
+ * Interacts directly with Supabase PostgreSQL tables: stores, products, inventory, sales.
+ */
+
+import { supabase } from '../supabase';
+import { StoreRecord, ProductRecord } from '../types';
+
+export interface SupabaseStoreRow {
+  id: number | string;
+  store_name: string;
+  location: string;
+  status: string;
+}
+
+export interface SupabaseProductRow {
+  id: number | string;
+  product_name: string;
+  category: string;
+  price: number;
+  sku?: string;
+}
+
+export interface SupabaseInventoryRow {
+  id: number | string;
+  store_id: number | string;
+  product_id: number | string;
+  stock: number;
+}
+
+export interface SupabaseSalesRow {
+  id: number | string;
+  store_id: number | string;
+  product_id: number | string;
+  sale_date: string;
+}
+
+export interface SupabaseFetchResult {
+  success: boolean;
+  error?: string;
+  stores: SupabaseStoreRow[];
+  products: SupabaseProductRow[];
+  inventory: SupabaseInventoryRow[];
+  sales: SupabaseSalesRow[];
+  tableCounts: {
+    stores: number;
+    products: number;
+    inventory: number;
+    sales: number;
+  };
+  mappedStoreRecords: StoreRecord[];
+  mappedProductRecords: ProductRecord[];
+}
+
+/**
+ * Fetch all raw records from Supabase tables: stores, products, inventory, sales
+ */
+export async function fetchSupabaseData(): Promise<SupabaseFetchResult> {
+  try {
+    const [storesRes, productsRes, inventoryRes, salesRes] = await Promise.all([
+      supabase.from('stores').select('*'),
+      supabase.from('products').select('*'),
+      supabase.from('inventory').select('*'),
+      supabase.from('sales').select('*')
+    ]);
+
+    if (storesRes.error) {
+      return createErrorResult(`stores error: ${storesRes.error.message}`);
+    }
+    if (productsRes.error) {
+      return createErrorResult(`products error: ${productsRes.error.message}`);
+    }
+    if (inventoryRes.error) {
+      return createErrorResult(`inventory error: ${inventoryRes.error.message}`);
+    }
+    if (salesRes.error) {
+      return createErrorResult(`sales error: ${salesRes.error.message}`);
+    }
+
+    const stores: SupabaseStoreRow[] = storesRes.data || [];
+    const products: SupabaseProductRow[] = productsRes.data || [];
+    const inventory: SupabaseInventoryRow[] = inventoryRes.data || [];
+    const sales: SupabaseSalesRow[] = salesRes.data || [];
+
+    const productMap = new Map<string, SupabaseProductRow>();
+    products.forEach(p => productMap.set(String(p.id), p));
+
+    // Map store records based strictly on database rows
+    const mappedStoreRecords: StoreRecord[] = stores.map(st => {
+      const stIdStr = String(st.id);
+
+      // Inventory for this store
+      const storeInv = inventory.filter(inv => String(inv.store_id) === stIdStr);
+      const totalAvailableStock = storeInv.reduce((sum, item) => sum + (Number(item.stock) || 0), 0);
+
+      // Sales for this store
+      const storeSales = sales.filter(sl => String(sl.store_id) === stIdStr);
+      const totalTransactions = storeSales.length;
+
+      // Compute total sales value based on product prices
+      let computedSalesValue = 0;
+      storeSales.forEach(sl => {
+        const prod = productMap.get(String(sl.product_id));
+        if (prod) {
+          computedSalesValue += Number(prod.price) || 0;
+        }
+      });
+
+      return {
+        storeId: `STR-${st.id}`,
+        storeName: st.store_name,
+        location: st.location || 'Unknown',
+        analysisDate: new Date().toISOString().split('T')[0],
+        totalSales: computedSalesValue,
+        transactions: totalTransactions,
+        footfall: totalTransactions > 0 ? Math.round(totalTransactions * 1.5) : 0,
+        inventoryAvailable: totalAvailableStock,
+        inventorySold: totalTransactions,
+        wastageQuantity: 0,
+        purchaseOrderStatus: st.status === 'Active' ? 'Delivered' : 'Pending',
+        staffCount: 10,
+        complianceScore: 95
+      };
+    });
+
+    // Map product records for store detailed analysis
+    const mappedProductRecords: ProductRecord[] = [];
+    inventory.forEach(inv => {
+      const prod = productMap.get(String(inv.product_id));
+      if (prod) {
+        const prodSalesCount = sales.filter(
+          s => String(s.store_id) === String(inv.store_id) && String(s.product_id) === String(inv.product_id)
+        ).length;
+
+        mappedProductRecords.push({
+          storeId: `STR-${inv.store_id}`,
+          productId: String(prod.id),
+          productName: prod.product_name,
+          category: prod.category,
+          stockAvailable: Number(inv.stock) || 0,
+          stockSold: prodSalesCount,
+          wastageQuantity: 0,
+          unitPrice: Number(prod.price) || 0,
+          supplierStatus: 'On Time'
+        });
+      }
+    });
+
+    return {
+      success: true,
+      stores,
+      products,
+      inventory,
+      sales,
+      tableCounts: {
+        stores: stores.length,
+        products: products.length,
+        inventory: inventory.length,
+        sales: sales.length
+      },
+      mappedStoreRecords,
+      mappedProductRecords
+    };
+  } catch (err: any) {
+    return createErrorResult(err?.message || 'Failed to fetch from Supabase');
+  }
+}
+
+function createErrorResult(errorMsg: string): SupabaseFetchResult {
+  return {
+    success: false,
+    error: errorMsg,
+    stores: [],
+    products: [],
+    inventory: [],
+    sales: [],
+    tableCounts: { stores: 0, products: 0, inventory: 0, sales: 0 },
+    mappedStoreRecords: [],
+    mappedProductRecords: []
+  };
+}
+
+===== src\engine\pipeline.ts =====
+/**
+ * FreshPulse AI — Complete Decision-First Analysis Pipeline
+ * Pure, deterministic orchestration:
+ * User input -> Validation -> Metrics -> Risks -> Scoring -> Investigation -> Actions -> Ranking -> Result
+ */
+
+import { StoreRecord, ProductRecord, StoreAnalysis, AnalysisInput, AnalysisResult } from '../types';
+import { calculateStoreMetrics, calculateNetworkSummary } from './metrics';
+import { evaluateStoreRisks } from './riskEngine';
+import { calculatePriorityScore } from './scoringEngine';
+import {
+  generateStoreInvestigation,
+  detectMainProblemAndEvidence,
+  estimateBusinessImpact,
+  deriveFirstAction,
+  generateRootCauseAnalysis,
+  generateCoreAnswers
+} from './investigationEngine';
+import { generateStoreActions } from './recommendationEngine';
+
+export function analyzeStore(store: StoreRecord, rank: number = 1, totalStores: number = 1, topStoreRef: { storeId: string; storeName: string; score: number } | null = null): StoreAnalysis {
+  const metrics = calculateStoreMetrics(store);
+  const risks = evaluateStoreRisks(store, metrics);
+  const scoreBreakdown = calculatePriorityScore(store, metrics);
+  const investigation = generateStoreInvestigation(store, metrics, risks, scoreBreakdown);
+  const actions = generateStoreActions(store, metrics, risks, scoreBreakdown);
+
+  const { mainProblem, primaryEvidence } = detectMainProblemAndEvidence(store, metrics, risks);
+  const businessImpact = estimateBusinessImpact(store, metrics, risks);
+  const firstAction = deriveFirstAction(store, actions, risks);
+  const rootCauseAnalysis = generateRootCauseAnalysis(store, metrics, risks);
+
+  const topStore = topStoreRef || {
+    storeId: store.storeId,
+    storeName: store.storeName,
+    score: scoreBreakdown.totalScore
+  };
+
+  const coreAnswers = generateCoreAnswers(
+    store,
+    metrics,
+    risks,
+    scoreBreakdown,
+    rank,
+    totalStores,
+    topStore,
+    businessImpact,
+    firstAction,
+    mainProblem,
+    primaryEvidence
+  );
+
+  let urgencyLevel: StoreAnalysis['urgencyLevel'] = 'Low';
+  if (
+    scoreBreakdown.totalScore >= 70 ||
+    (store.inventoryAvailable === 0 && store.inventorySold > 0 && (store.purchaseOrderStatus === 'Critical Delay' || store.purchaseOrderStatus === 'Delayed'))
+  ) {
+    urgencyLevel = 'Critical';
+  } else if (
+    scoreBreakdown.totalScore >= 45 ||
+    (store.inventoryAvailable === 0 && store.inventorySold > 0) ||
+    store.purchaseOrderStatus === 'Critical Delay'
+  ) {
+    urgencyLevel = 'High';
+  } else if (scoreBreakdown.totalScore >= 25) {
+    urgencyLevel = 'Medium';
+  }
+
+  const rankExplanation = rank === 1
+    ? `Ranked #1 because it has the highest risk score (${scoreBreakdown.totalScore}/100) and strongest evidence of immediate business exposure: ${mainProblem}`
+    : `Ranked #${rank} with risk score ${scoreBreakdown.totalScore}/100, trailing Store ${topStore.storeName} (#1, score ${topStore.score}/100). ${scoreBreakdown.totalScore > 0 ? `Key issue: ${mainProblem}` : 'Operations nominal.'}`;
+
+  return {
+    store,
+    metrics,
+    risks,
+    priorityScore: scoreBreakdown.totalScore,
+    scoreBreakdown,
+    investigation,
+    actions,
+    rank,
+    urgencyLevel,
+    mainProblem,
+    primaryEvidence,
+    businessImpact,
+    firstAction,
+    rankExplanation,
+    coreAnswers,
+    rootCauseAnalysis
+  };
+}
+
+export function runFullPipeline(stores: StoreRecord[]): StoreAnalysis[] {
+  if (stores.length === 0) return [];
+
+  // 1. Initial pass to compute metrics, risks, scoring, and business impact for all stores
+  const rawAnalyses = stores.map(s => {
+    const metrics = calculateStoreMetrics(s);
+    const risks = evaluateStoreRisks(s, metrics);
+    const scoreBreakdown = calculatePriorityScore(s, metrics);
+    const businessImpact = estimateBusinessImpact(s, metrics, risks);
+    return {
+      store: s,
+      metrics,
+      risks,
+      scoreBreakdown,
+      businessImpact
+    };
+  });
+
+  // 2. Rank stores: highest priorityScore first; if tied, highest estimated loss amount first
+  rawAnalyses.sort((a, b) => {
+    if (b.scoreBreakdown.totalScore !== a.scoreBreakdown.totalScore) {
+      return b.scoreBreakdown.totalScore - a.scoreBreakdown.totalScore;
+    }
+    const lossB = b.businessImpact.estimatedLossAmount || 0;
+    const lossA = a.businessImpact.estimatedLossAmount || 0;
+    return lossB - lossA;
+  });
+
+  const totalStores = rawAnalyses.length;
+  const topRaw = rawAnalyses[0];
+  const topStoreRef = {
+    storeId: topRaw.store.storeId,
+    storeName: topRaw.store.storeName,
+    score: topRaw.scoreBreakdown.totalScore
+  };
+
+  // 3. Generate complete StoreAnalysis with comparative ranking explanations
+  const rankedAnalyses: StoreAnalysis[] = rawAnalyses.map((raw, index) => {
+    const rank = index + 1;
+    const store = raw.store;
+    const metrics = raw.metrics;
+    const risks = raw.risks;
+    const scoreBreakdown = raw.scoreBreakdown;
+    const investigation = generateStoreInvestigation(store, metrics, risks, scoreBreakdown);
+    const actions = generateStoreActions(store, metrics, risks, scoreBreakdown);
+
+    const { mainProblem, primaryEvidence } = detectMainProblemAndEvidence(store, metrics, risks);
+    const businessImpact = raw.businessImpact;
+    const firstAction = deriveFirstAction(store, actions, risks);
+    const rootCauseAnalysis = generateRootCauseAnalysis(store, metrics, risks);
+
+    let urgencyLevel: StoreAnalysis['urgencyLevel'] = 'Low';
+    if (
+      scoreBreakdown.totalScore >= 70 ||
+      (store.inventoryAvailable === 0 && store.inventorySold > 0 && (store.purchaseOrderStatus === 'Critical Delay' || store.purchaseOrderStatus === 'Delayed'))
+    ) {
+      urgencyLevel = 'Critical';
+    } else if (
+      scoreBreakdown.totalScore >= 45 ||
+      (store.inventoryAvailable === 0 && store.inventorySold > 0) ||
+      store.purchaseOrderStatus === 'Critical Delay'
+    ) {
+      urgencyLevel = 'High';
+    } else if (scoreBreakdown.totalScore >= 25) {
+      urgencyLevel = 'Medium';
+    }
+
+    let rankExplanation = '';
+    if (rank === 1) {
+      const runnerUp = rawAnalyses[1];
+      rankExplanation = runnerUp
+        ? `Ranked #1 (Score: ${scoreBreakdown.totalScore}/100) because it exhibits the most severe compounding business risk: ${mainProblem}. Outranks Store ${runnerUp.store.storeName} (#2, ${runnerUp.scoreBreakdown.totalScore}/100) due to higher immediate loss exposure (${businessImpact.formattedLoss}).`
+        : `Ranked #1 (Score: ${scoreBreakdown.totalScore}/100) with strongest evidence of business risk: ${mainProblem} (${businessImpact.formattedLoss} at risk).`;
+    } else {
+      rankExplanation = `Ranked #${rank} (Score: ${scoreBreakdown.totalScore}/100) below Store ${topStoreRef.storeName} (#1, ${topStoreRef.score}/100) because its buffer and delivery conditions are less critically threatened. ${scoreBreakdown.totalScore > 0 ? `Key finding: ${mainProblem}` : 'Operations nominal.'}`;
+    }
+
+    const coreAnswers = generateCoreAnswers(
+      store,
+      metrics,
+      risks,
+      scoreBreakdown,
+      rank,
+      totalStores,
+      topStoreRef,
+      businessImpact,
+      firstAction,
+      mainProblem,
+      primaryEvidence
+    );
+
+    return {
+      store,
+      metrics,
+      risks,
+      priorityScore: scoreBreakdown.totalScore,
+      scoreBreakdown,
+      investigation,
+      actions,
+      rank,
+      urgencyLevel,
+      mainProblem,
+      primaryEvidence,
+      businessImpact,
+      firstAction,
+      rankExplanation,
+      coreAnswers,
+      rootCauseAnalysis
+    };
+  });
+
+  return rankedAnalyses;
+}
+
+/**
+ * Analysis service contract:
+ * Runs the deterministic analysis pipeline asynchronously on user-submitted input.
+ */
+export async function analyzeAll(input: AnalysisInput): Promise<AnalysisResult> {
+  // Slight delay to allow UI to present "Analyzing store data..." feedback
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const analyses = runFullPipeline(input.stores);
+  const networkSummary = calculateNetworkSummary(analyses);
+
+  return {
+    analyses,
+    networkSummary,
+    analyzedAt: new Date().toISOString()
+  };
+}
+
+===== src\engine\scoringEngine.ts =====
+/**
+ * FreshPulse AI — Transparent Priority Scoring Engine
+ * Generates an explainable 0–100 Priority Score with itemized point breakdown.
+ * A score is a deterministic operational priority index, NOT an uncalibrated probability.
+ */
+
+import { StoreRecord, ComputedMetrics, PriorityScoreBreakdown } from '../types';
+
+export function calculatePriorityScore(
+  store: StoreRecord,
+  metrics: ComputedMetrics
+): PriorityScoreBreakdown {
+  // 1. Inventory Points (Max 30)
+  let inventoryRiskPoints = 0;
+  if (store.inventoryAvailable === 0 && store.inventorySold > 0) {
+    inventoryRiskPoints = 30;
+  } else if (metrics.stockToSalesRatio < 0.25 && store.inventorySold > 0) {
+    inventoryRiskPoints = 24;
+  } else if (metrics.stockToSalesRatio < 0.5 && store.inventorySold > 0) {
+    inventoryRiskPoints = 16;
+  } else if (metrics.stockToSalesRatio < 0.8 && store.inventorySold > 0) {
+    inventoryRiskPoints = 8;
+  } else if (store.inventoryAvailable > 500 && metrics.stockToSalesRatio > 4) {
+    // Overstock risk penalty
+    inventoryRiskPoints = 10;
+  }
+
+  // 2. Wastage Points (Max 25)
+  let wastageRiskPoints = 0;
+  if (metrics.wastageRate > 15) {
+    wastageRiskPoints = 25;
+  } else if (metrics.wastageRate > 10) {
+    wastageRiskPoints = 18;
+  } else if (metrics.wastageRate > 5) {
+    wastageRiskPoints = 10;
+  } else if (metrics.wastageRate > 2) {
+    wastageRiskPoints = 4;
+  }
+
+  // 3. Sales & Conversion Disparity (Max 20)
+  let salesConversionPoints = 0;
+  if (store.footfall > 0 && store.transactions === 0) {
+    salesConversionPoints = 20;
+  } else if (store.footfall >= 50) {
+    if (metrics.conversionRate < 15) {
+      salesConversionPoints = 16;
+    } else if (metrics.conversionRate < 25) {
+      salesConversionPoints = 11;
+    } else if (metrics.conversionRate < 35) {
+      salesConversionPoints = 5;
+    }
+  }
+
+  // 4. Supply Chain / PO Disruption (Max 15)
+  let supplyChainPoints = 0;
+  if (store.purchaseOrderStatus === 'Critical Delay') {
+    supplyChainPoints = 15;
+  } else if (store.purchaseOrderStatus === 'Delayed') {
+    supplyChainPoints = 10;
+  } else if (store.purchaseOrderStatus === 'Cancelled') {
+    supplyChainPoints = 12;
+  } else if (store.purchaseOrderStatus === 'Pending' && store.inventoryAvailable < 30) {
+    supplyChainPoints = 6;
+  }
+
+  // 5. Compliance & Store Standards (Max 10)
+  let compliancePoints = 0;
+  if (store.complianceScore < 50) {
+    compliancePoints = 10;
+  } else if (store.complianceScore < 70) {
+    compliancePoints = 7;
+  } else if (store.complianceScore < 80) {
+    compliancePoints = 4;
+  }
+
+  const rawTotal =
+    inventoryRiskPoints +
+    wastageRiskPoints +
+    salesConversionPoints +
+    supplyChainPoints +
+    compliancePoints;
+
+  const totalScore = Math.min(100, Math.max(0, rawTotal));
+
+  // Determine dominant factor
+  const pointCategories = [
+    { name: 'Inventory Shortage / Imbalance', points: inventoryRiskPoints, weight: 30 },
+    { name: 'Wastage & Spoilage Surge', points: wastageRiskPoints, weight: 25 },
+    { name: 'Customer Conversion Deficit', points: salesConversionPoints, weight: 20 },
+    { name: 'Supplier / PO Delivery Delays', points: supplyChainPoints, weight: 15 },
+    { name: 'Operations & Compliance Deficit', points: compliancePoints, weight: 10 }
+  ];
+
+  pointCategories.sort((a, b) => (b.points / b.weight) - (a.points / a.weight));
+  const dominantRiskFactor = totalScore > 0 ? pointCategories[0].name : 'Operations Nominal (Low Risk)';
+
+  return {
+    inventoryRiskPoints,
+    wastageRiskPoints,
+    salesConversionPoints,
+    supplyChainPoints,
+    compliancePoints,
+    totalScore,
+    dominantRiskFactor
+  };
+}
+
+===== src\engine\riskEngine.ts =====
+/**
+ * FreshPulse AI — Risk Detection Engine
+ * Deterministic rule-based evaluation.
+ * Rigorously separates observed facts from possible causes and falsification criteria.
+ */
+
+import { StoreRecord, ComputedMetrics, RiskAlert } from '../types';
+
+export function evaluateStoreRisks(store: StoreRecord, metrics: ComputedMetrics): RiskAlert[] {
+  const risks: RiskAlert[] = [];
+
+  // 1. INVENTORY: Complete Stockout or Depletion Risk
+  if (store.inventoryAvailable === 0 && store.inventorySold > 0) {
+    risks.push({
+      id: `risk-stockout-${store.storeId}`,
+      category: 'inventory',
+      severity: 'critical',
+      title: 'Complete Stock Depletion',
+      description: 'Store has 0 available inventory units while showing recorded consumer demand.',
+      observedEvidence: `Available stock = 0 units; Sold units = ${store.inventorySold} units.`,
+      potentialCause: 'Sudden demand surge outstripped replenishment cycle, or delivery failed without record.',
+      falsificationEvidence: 'If physical unrecorded stock is found in backroom inventory or sales continue without restock.',
+      recommendedActionHint: 'Request emergency network transfer from nearest surplus store or expedite supplier order.',
+      metricImpact: 'Active revenue loss from unmet shopper demand.'
+    });
+  } else if (metrics.stockToSalesRatio < 0.35 && store.inventorySold > 0) {
+    risks.push({
+      id: `risk-low-buffer-${store.storeId}`,
+      category: 'inventory',
+      severity: 'high',
+      title: 'Critically Low Stock Buffer',
+      description: 'Remaining stock coverage is less than 0.35x daily sales volume.',
+      observedEvidence: `Stock-to-sales ratio is ${metrics.stockToSalesRatio.toFixed(2)}x (Available: ${store.inventoryAvailable}, Sold: ${store.inventorySold}).`,
+      potentialCause: 'Inflow rate lower than daily velocity; order batch sizes insufficient.',
+      falsificationEvidence: 'If customer footfall drops dramatically on subsequent day reducing run-rate.',
+      recommendedActionHint: 'Confirm estimated delivery time of pending PO or rebalance stock from nearby hub.',
+      metricImpact: 'High probability of stockout within next operational shift.'
+    });
+  }
+
+  // 2. SUPPLY CHAIN: Purchase Order Delays
+  if (store.purchaseOrderStatus === 'Critical Delay') {
+    risks.push({
+      id: `risk-po-crit-${store.storeId}`,
+      category: 'supply_chain',
+      severity: 'critical',
+      title: 'Critical Purchase Order Delay',
+      description: 'Supplier shipment has missed expected delivery window with critical operational flag.',
+      observedEvidence: `Purchase Order Status is marked "Critical Delay". Remaining stock = ${store.inventoryAvailable} units.`,
+      potentialCause: 'Supplier stockout, logistics fleet breakdown, or unacknowledged distribution center bottleneck.',
+      falsificationEvidence: 'If supplier logistics tracking proves dispatch is arriving today or supplier delivery slip was missed.',
+      recommendedActionHint: 'Escalate to franchise supplier coordinator and identify cross-dock transfer options.',
+      metricImpact: 'Compounding inventory depletion and risk of empty shelves.'
+    });
+  } else if (store.purchaseOrderStatus === 'Delayed') {
+    risks.push({
+      id: `risk-po-delayed-${store.storeId}`,
+      category: 'supply_chain',
+      severity: 'medium',
+      title: 'Purchase Order Logistics Delay',
+      description: 'Replenishment order is delayed against expected schedule.',
+      observedEvidence: `Purchase Order Status is "Delayed". Available stock: ${store.inventoryAvailable} units.`,
+      potentialCause: 'Transit congestion or delayed warehouse picking.',
+      falsificationEvidence: 'If delivery arrives during morning receiving hours.',
+      recommendedActionHint: 'Check revised ETA with dispatch and monitor buffer.',
+      metricImpact: 'Potential buffer erosion if replenishment cycle slips further.'
+    });
+  }
+
+  // 3. WASTAGE: Spoilage / Shrinkage Surge
+  if (metrics.wastageRate > 12) {
+    risks.push({
+      id: `risk-waste-crit-${store.storeId}`,
+      category: 'wastage',
+      severity: 'critical',
+      title: 'Severe Wastage Surge',
+      description: `Wastage represents ${metrics.wastageRate.toFixed(1)}% of total consumed items, far exceeding franchise threshold (5%).`,
+      observedEvidence: `Wastage quantity is ${store.wastageQuantity} units vs ${store.inventorySold} sold units (${metrics.wastageRate.toFixed(1)}% wastage rate).`,
+      potentialCause: 'Cold-chain refrigeration failure, over-ordering perishable produce, or batch expiration.',
+      falsificationEvidence: 'If waste audit reveals data entry error (e.g. damaged transit carton marked twice) rather than floor loss.',
+      recommendedActionHint: 'Inspect store chillers immediately, review freshness audit, and discount nearing-expiry items.',
+      metricImpact: 'Direct margin loss and wasted purchasing capital.'
+    });
+  } else if (metrics.wastageRate > 6) {
+    risks.push({
+      id: `risk-waste-high-${store.storeId}`,
+      category: 'wastage',
+      severity: 'high',
+      title: 'Elevated Wastage Rate',
+      description: `Wastage rate of ${metrics.wastageRate.toFixed(1)}% is above target operational tolerance.`,
+      observedEvidence: `Recorded ${store.wastageQuantity} waste units against ${store.inventorySold} sold.`,
+      potentialCause: 'Suboptimal rotation (FIFO failure), minor temperature variation, or over-ordering.',
+      falsificationEvidence: 'If customer returns of non-spoiled goods were miscategorized as waste.',
+      recommendedActionHint: 'Reinforce rotation protocols with floor staff and adjust order quantities.',
+      metricImpact: 'Unnecessary cost drag on daily store profitability.'
+    });
+  }
+
+  // 4. SALES & CONVERSION: Footfall Conversion Anomaly
+  if (store.footfall > 80 && metrics.conversionRate < 25) {
+    risks.push({
+      id: `risk-conversion-${store.storeId}`,
+      category: 'sales',
+      severity: 'high',
+      title: 'Low Customer Conversion Disparity',
+      description: 'High footfall traffic entering store is not translating to checkout transactions.',
+      observedEvidence: `Footfall is ${store.footfall} visitors, but only ${store.transactions} transactions recorded (${metrics.conversionRate.toFixed(1)}% conversion).`,
+      potentialCause: 'Shoppers left without purchasing due to missing key items (stockouts), long queues, or uncompetitive pricing.',
+      falsificationEvidence: 'If pedestrian sensor miscounted passers-by through door or mall event skewed doorway footfall.',
+      recommendedActionHint: 'Check shelf availability in high-velocity categories and verify POS queue wait times.',
+      metricImpact: 'Lost basket revenue from qualified in-store footfall.'
+    });
+  } else if (store.footfall > 0 && store.transactions === 0) {
+    risks.push({
+      id: `risk-zero-tx-${store.storeId}`,
+      category: 'sales',
+      severity: 'critical',
+      title: 'Zero Transactions Despite Footfall',
+      description: 'Footfall was recorded but zero sales transactions occurred.',
+      observedEvidence: `Footfall = ${store.footfall}, Transactions = 0, Total Sales = $0.`,
+      potentialCause: 'POS terminal failure, network outage, or store was closed for walk-in shopping.',
+      falsificationEvidence: 'If offline transactions are pending upload in local register cache.',
+      recommendedActionHint: 'Perform immediate technical check on POS system and network connectivity.',
+      metricImpact: 'Complete revenue loss during operating hours.'
+    });
+  }
+
+  // 5. OPERATIONS & COMPLIANCE: Audit & Staffing Pressures
+  if (store.complianceScore < 60) {
+    risks.push({
+      id: `risk-compliance-crit-${store.storeId}`,
+      category: 'operations',
+      severity: 'critical',
+      title: 'Critical Compliance / Audit Deficit',
+      description: `Store compliance score of ${store.complianceScore}/100 indicates significant regulatory or operational risk.`,
+      observedEvidence: `Compliance score = ${store.complianceScore}/100 (Threshold: 75).`,
+      potentialCause: 'Food safety lapse, hygiene standard violation, or skipped operational checklist items.',
+      falsificationEvidence: 'If audit date was recorded incorrectly or remedial inspection has not yet been synced.',
+      recommendedActionHint: 'Schedule immediate regional supervisor audit and dispatch compliance checklist.',
+      metricImpact: 'Brand damage risk, potential municipal fines, or health inspection closure.'
+    });
+  } else if (store.complianceScore < 75) {
+    risks.push({
+      id: `risk-compliance-med-${store.storeId}`,
+      category: 'operations',
+      severity: 'medium',
+      title: 'Sub-Standard Compliance Score',
+      description: `Compliance score of ${store.complianceScore}/100 is below target benchmark (75).`,
+      observedEvidence: `Recorded compliance score is ${store.complianceScore}/100.`,
+      potentialCause: 'Staff turnover, lack of training, or backlog of operational logging.',
+      falsificationEvidence: 'If pending corrective actions were closed after audit timestamp.',
+      recommendedActionHint: 'Issue standard remediation notice to store manager.',
+      metricImpact: 'Operational friction and increased likelihood of inventory mismanagement.'
+    });
+  }
+
+  // Understaffing strain
+  if (store.staffCount > 0 && store.footfall / store.staffCount > 150) {
+    risks.push({
+      id: `risk-understaffed-${store.storeId}`,
+      category: 'operations',
+      severity: 'medium',
+      title: 'Staffing Capacity Strain',
+      description: `High customer-to-staff ratio (${(store.footfall / store.staffCount).toFixed(0)} visitors per staff member) may compromise service quality and inventory management.`,
+      observedEvidence: `Footfall = ${store.footfall}, Staff = ${store.staffCount} (${(store.footfall / store.staffCount).toFixed(0)}:1 ratio).`,
+      potentialCause: 'Unplanned staff absence or shift scheduling mismatch with peak shopping hours.',
+      falsificationEvidence: 'If automated self-checkout kiosks processed the majority of traffic.',
+      recommendedActionHint: 'Reassign floater staff or adjust peak-hour shift schedule.',
+      metricImpact: 'Elevated queue times, missed shelf replenishment, and increased wastage.'
+    });
+  }
+
+  return risks;
+}
+
+===== src\context\StoreDataContext.tsx =====
+/**
+ * FreshPulse — Store Data Context
+ * Clean, lightweight store operations state with Supabase integration and LocalStorage persistence.
+ * Uses src/services/supabaseService.ts for Supabase database integration.
+ * Uses src/store/storeStore.ts for persistent saved store records.
+ */
+
+import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import {
+  StoreRecord,
+  ProductRecord,
+  StoreAnalysis,
+  CSVParseSummary,
+  ActionStatus,
+  NetworkSummary,
+  AnalysisResult
+} from '../types';
+import {
+  getSavedStores,
+  saveStore,
+  updateStore,
+  deleteStore
+} from '../store/storeStore';
+import { analyzeAll } from '../engine/pipeline';
+import { ILLUSTRATIVE_SAMPLE_STORES } from '../engine/sampleData';
+import { fetchSupabaseData, SupabaseFetchResult } from '../services/supabaseService';
+
+interface StoreDataContextType {
+  // Saved Stores (from localStorage)
+  savedStores: StoreRecord[];
+  refreshSavedStores: () => void;
+  addStore: (store: StoreRecord) => { success: boolean; message: string; isDuplicate?: boolean };
+  modifyStore: (store: StoreRecord) => { success: boolean; message: string };
+  removeStore: (storeId: string) => { success: boolean; message: string };
+
+  // Supabase State
+  isSupabaseData: boolean;
+  isLoadingSupabase: boolean;
+  supabaseError: string | null;
+  supabaseTableCounts: { stores: number; products: number; inventory: number; sales: number } | null;
+  loadSupabaseData: () => Promise<boolean>;
+
+  // Active Analysis State
+  activeAnalysisResult: AnalysisResult | null;
+  analyses: StoreAnalysis[];
+  networkSummary: NetworkSummary;
+  selectedStoreId: string | null;
+  selectedAnalysis: StoreAnalysis | null;
+  isAnalyzing: boolean;
+  isDataLoaded: boolean;
+  isSampleData: boolean;
+
+  // Analysis Trigger
+  runAnalysis: (storesToAnalyze: StoreRecord[], isSample?: boolean, productsToAnalyze?: ProductRecord[]) => Promise<boolean>;
+  clearAnalysis: () => void;
+  loadDemoData: () => Promise<boolean>;
+  clearAllData: () => void;
+
+  // Store Selection & Actions
+  setSelectedStoreId: (storeId: string | null) => void;
+  actionStatuses: Record<string, ActionStatus>;
+  updateActionStatus: (actionId: string, status: ActionStatus) => void;
+}
+
+const StoreDataContext = createContext<StoreDataContextType | undefined>(undefined);
+
+const LOCAL_STORAGE_ACTION_KEY = 'freshpulse_action_statuses_v2';
+const LOCAL_STORAGE_SAMPLE_KEY = 'freshpulse_is_sample_v2';
+
+export const StoreDataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  // 1. Saved Stores from localStorage
+  const [savedStores, setSavedStores] = useState<StoreRecord[]>(() => {
+    return getSavedStores();
+  });
+
+  const refreshSavedStores = () => {
+    setSavedStores(getSavedStores());
+  };
+
+  const addStore = (store: StoreRecord) => {
+    const res = saveStore(store);
+    if (res.success) {
+      setSavedStores(getSavedStores());
+    }
+    return res;
+  };
+
+  const modifyStore = (store: StoreRecord) => {
+    const res = updateStore(store);
+    if (res.success) {
+      setSavedStores(getSavedStores());
+    }
+    return res;
+  };
+
+  const removeStore = (storeId: string) => {
+    const res = deleteStore(storeId);
+    if (res.success) {
+      setSavedStores(getSavedStores());
+      if (selectedStoreId === storeId) {
+        setSelectedStoreId(null);
+      }
+    }
+    return res;
+  };
+
+  // 2. Supabase Integration State
+  const [isSupabaseData, setIsSupabaseData] = useState<boolean>(false);
+  const [isLoadingSupabase, setIsLoadingSupabase] = useState<boolean>(false);
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [supabaseTableCounts, setSupabaseTableCounts] = useState<{
+    stores: number;
+    products: number;
+    inventory: number;
+    sales: number;
+  } | null>(null);
+
+  // 3. Active Analysis State
+  const [activeAnalysisResult, setActiveAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [isSampleData, setIsSampleData] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(LOCAL_STORAGE_SAMPLE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [selectedStoreId, setSelectedStoreId] = useState<string | null>(null);
+
+  // 4. Action Statuses persistence
+  const [actionStatuses, setActionStatuses] = useState<Record<string, ActionStatus>>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_ACTION_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_ACTION_KEY, JSON.stringify(actionStatuses));
+    } catch {
+      // Ignore
+    }
+  }, [actionStatuses]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_SAMPLE_KEY, isSampleData ? 'true' : 'false');
+    } catch {
+      // Ignore
+    }
+  }, [isSampleData]);
+
+  // Derived analyses decorated with action statuses
+  const analyses = useMemo(() => {
+    if (!activeAnalysisResult || !activeAnalysisResult.analyses) return [];
+    return activeAnalysisResult.analyses.map(analysis => ({
+      ...analysis,
+      actions: analysis.actions.map(act => ({
+        ...act,
+        status: actionStatuses[act.id] || act.status
+      }))
+    }));
+  }, [activeAnalysisResult, actionStatuses]);
+
+  // Network Summary
+  const networkSummary = useMemo(() => {
+    if (!activeAnalysisResult || !activeAnalysisResult.networkSummary) {
+      return {
+        totalStores: 0,
+        totalSales: 0,
+        totalTransactions: 0,
+        totalFootfall: 0,
+        totalWastageUnits: 0,
+        totalAvailableStock: 0,
+        averageConversionRate: 0,
+        averageComplianceScore: 0,
+        storesRequiringAttention: 0,
+        criticalStoresCount: 0,
+        totalOpenActions: 0
+      };
+    }
+    return activeAnalysisResult.networkSummary;
+  }, [activeAnalysisResult]);
+
+  // Selected Store Analysis
+  const selectedAnalysis = useMemo(() => {
+    if (analyses.length === 0) return null;
+    if (!selectedStoreId) return analyses[0];
+    return analyses.find(a => a.store.storeId === selectedStoreId) || analyses[0];
+  }, [analyses, selectedStoreId]);
+
+  // 5. Run Analysis Function
+  const runAnalysis = async (
+    storesToAnalyze: StoreRecord[],
+    isSample: boolean = false,
+    productsToAnalyze?: ProductRecord[]
+  ): Promise<boolean> => {
+    if (!storesToAnalyze || storesToAnalyze.length === 0) {
+      return false;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      const result = await analyzeAll({
+        stores: storesToAnalyze,
+        products: productsToAnalyze
+      });
+      setActiveAnalysisResult(result);
+      setIsSampleData(isSample);
+      setSelectedStoreId(storesToAnalyze[0]?.storeId || null);
+      setIsAnalyzing(false);
+      return true;
+    } catch (err) {
+      console.error('Analysis failed:', err);
+      setIsAnalyzing(false);
+      return false;
+    }
+  };
+
+  // 6. Load Supabase Data Function
+  const loadSupabaseData = async (): Promise<boolean> => {
+    setIsLoadingSupabase(true);
+    setSupabaseError(null);
+    try {
+      const res: SupabaseFetchResult = await fetchSupabaseData();
+      if (!res.success) {
+        setSupabaseError(res.error || 'Failed to retrieve Supabase database rows.');
+        setIsLoadingSupabase(false);
+        return false;
+      }
+
+      setSupabaseTableCounts(res.tableCounts);
+
+      if (res.mappedStoreRecords.length > 0) {
+        const success = await runAnalysis(
+          res.mappedStoreRecords,
+          false,
+          res.mappedProductRecords
+        );
+        if (success) {
+          setIsSupabaseData(true);
+          setIsSampleData(false);
+        }
+        setIsLoadingSupabase(false);
+        return success;
+      } else {
+        setIsSupabaseData(true);
+        setIsSampleData(false);
+        setIsLoadingSupabase(false);
+        return true;
+      }
+    } catch (err: any) {
+      setSupabaseError(err?.message || 'Error connecting to Supabase database.');
+      setIsLoadingSupabase(false);
+      return false;
+    }
+  };
+
+  // Clear current active analysis
+  const clearAnalysis = () => {
+    setActiveAnalysisResult(null);
+    setSelectedStoreId(null);
+    setIsSampleData(false);
+    setIsSupabaseData(false);
+    setSupabaseError(null);
+  };
+
+  // Load demo data
+  const loadDemoData = async (): Promise<boolean> => {
+    setIsSupabaseData(false);
+    return await runAnalysis(ILLUSTRATIVE_SAMPLE_STORES, true);
+  };
+
+  // Clear all data (both saved stores and active analysis)
+  const clearAllData = () => {
+    try {
+      localStorage.removeItem('freshpulse_saved_stores_v1');
+      localStorage.removeItem(LOCAL_STORAGE_ACTION_KEY);
+      localStorage.removeItem(LOCAL_STORAGE_SAMPLE_KEY);
+    } catch {
+      // Ignore
+    }
+    setSavedStores([]);
+    setActiveAnalysisResult(null);
+    setSelectedStoreId(null);
+    setIsSampleData(false);
+    setIsSupabaseData(false);
+    setSupabaseError(null);
+    setActionStatuses({});
+  };
+
+  // Update action status
+  const updateActionStatus = (actionId: string, status: ActionStatus) => {
+    setActionStatuses(prev => ({
+      ...prev,
+      [actionId]: status
+    }));
+  };
+
+  const isDataLoaded = activeAnalysisResult !== null && analyses.length > 0;
+
+  return (
+    <StoreDataContext.Provider
+      value={{
+        savedStores,
+        refreshSavedStores,
+        addStore,
+        modifyStore,
+        removeStore,
+        isSupabaseData,
+        isLoadingSupabase,
+        supabaseError,
+        supabaseTableCounts,
+        loadSupabaseData,
+        activeAnalysisResult,
+        analyses,
+        networkSummary,
+        selectedStoreId,
+        selectedAnalysis,
+        isAnalyzing,
+        isDataLoaded,
+        isSampleData,
+        runAnalysis,
+        clearAnalysis,
+        loadDemoData,
+        clearAllData,
+        setSelectedStoreId,
+        actionStatuses,
+        updateActionStatus
+      }}
+    >
+      {children}
+    </StoreDataContext.Provider>
+  );
+};
+
+export function useStoreData() {
+  const context = useContext(StoreDataContext);
+  if (!context) {
+    throw new Error('useStoreData must be used within a StoreDataProvider');
+  }
+  return context;
+}
+
+===== src\components\layout\Header.tsx =====
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Menu, Sparkles, Store, ShieldCheck, FileEdit, RotateCcw, Database, RefreshCw, AlertCircle } from 'lucide-react';
+import { useStoreData } from '../../context/StoreDataContext';
+
+interface HeaderProps {
+  onOpenSidebar: () => void;
+  title: string;
+}
+
+export const Header: React.FC<HeaderProps> = ({ onOpenSidebar, title }) => {
+  const navigate = useNavigate();
+  const {
+    analyses,
+    selectedStoreId,
+    setSelectedStoreId,
+    isDataLoaded,
+    isSampleData,
+    isSupabaseData,
+    isLoadingSupabase,
+    supabaseError,
+    supabaseTableCounts,
+    loadSupabaseData,
+    clearAnalysis
+  } = useStoreData();
+
+  const handleConnectSupabase = async () => {
+    const success = await loadSupabaseData();
+    if (success) {
+      navigate('/dashboard');
+    }
+  };
+
+  return (
+    <header className="h-16 bg-white border-b border-slate-200/90 px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onOpenSidebar}
+          className="lg:hidden p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100"
+          aria-label="Toggle Navigation"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <div>
+          <h1 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+            {title}
+          </h1>
+          <div className="text-[11px] text-slate-500 hidden sm:block">
+            Store Operations & Intelligence Platform
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        {/* Supabase DB Connection Button / Badge */}
+        <button
+          onClick={handleConnectSupabase}
+          disabled={isLoadingSupabase}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
+            isSupabaseData
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+              : supabaseError
+              ? 'bg-red-50 border-red-300 text-red-800 hover:bg-red-100'
+              : 'bg-indigo-50 border-indigo-200 text-indigo-800 hover:bg-indigo-100'
+          }`}
+          title="Fetch live records from Supabase database tables (stores, products, inventory, sales)"
+        >
+          {isLoadingSupabase ? (
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+          ) : (
+            <Database className="w-3.5 h-3.5 text-indigo-600" />
+          )}
+          <span>
+            {isLoadingSupabase
+              ? 'Connecting Supabase...'
+              : isSupabaseData
+              ? 'Supabase DB Connected'
+              : 'Fetch Supabase DB'}
+          </span>
+        </button>
+
+        {/* Dataset badge */}
+        {isDataLoaded ? (
+          <div className="hidden md:flex items-center gap-2">
+            {isSupabaseData ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-semibold text-emerald-800">
+                <Database className="w-3.5 h-3.5 text-emerald-600" />
+                Live Supabase PostgreSQL Data
+              </span>
+            ) : isSampleData ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-800">
+                <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                Synthetic demonstration data
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-medium text-emerald-800">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                User Analysis ({analyses.length} Store{analyses.length > 1 ? 's' : ''})
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 text-[11px] font-medium text-slate-600">
+            No active analysis
+          </span>
+        )}
+
+        {/* Store Selector in Header if multiple analyzed stores */}
+        {isDataLoaded && analyses.length > 1 && (
+          <div className="hidden sm:flex items-center gap-1.5">
+            <Store className="w-4 h-4 text-slate-400" />
+            <select
+              value={selectedStoreId || analyses[0]?.store.storeId}
+              onChange={e => setSelectedStoreId(e.target.value)}
+              className="text-xs font-semibold bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            >
+              {analyses.map(a => (
+                <option key={a.store.storeId} value={a.store.storeId}>
+                  {a.store.storeName} ({a.store.storeId})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Analyze Store Button */}
+        <button
+          onClick={() => navigate('/analyze')}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer transition-colors"
+        >
+          <FileEdit className="w-3.5 h-3.5" />
+          <span>Analyze Store</span>
+        </button>
+
+        {/* Reset Analysis button */}
+        {isDataLoaded && (
+          <button
+            onClick={() => {
+              clearAnalysis();
+              navigate('/analyze');
+            }}
+            title="Clear current analysis"
+            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+    </header>
+  );
+};
+
+===== src\components\pages\DashboardPage.tsx =====
+import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  DollarSign,
+  ShoppingCart,
+  Users,
+  Package,
+  Trash2,
+  Truck,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  ArrowRight,
+  Search,
+  Sparkles,
+  ChevronRight,
+  ShieldAlert,
+  FileEdit,
+  UploadCloud,
+  Store,
+  Info,
+  Target,
+  Flame,
+  CheckSquare,
+  HelpCircle,
+  Eye,
+  Activity,
+  Database,
+  RefreshCw,
+  Code2,
+  Check
+} from 'lucide-react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  CartesianGrid
+} from 'recharts';
+import { useStoreData } from '../../context/StoreDataContext';
+import { Badge } from '../common/Badge';
+import { ScoreGauge } from '../common/ScoreGauge';
+
+export const DashboardPage: React.FC = () => {
+  const navigate = useNavigate();
+  const {
+    isDataLoaded,
+    isSampleData,
+    isSupabaseData,
+    isLoadingSupabase,
+    supabaseError,
+    supabaseTableCounts,
+    loadSupabaseData,
+    analyses,
+    networkSummary,
+    setSelectedStoreId,
+    loadDemoData,
+    clearAnalysis
+  } = useStoreData();
+
+  // Search & Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [urgencyFilter, setUrgencyFilter] = useState<'all' | 'Critical' | 'High' | 'Medium' | 'Low'>('all');
+  const [showSqlSeedModal, setShowSqlSeedModal] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
+  // Filtered stores
+  const filteredAnalyses = useMemo(() => {
+    return analyses.filter(a => {
+      const s = a.store;
+      const matchesSearch =
+        s.storeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        s.storeId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        s.location.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        a.mainProblem.toLowerCase().includes(searchTerm.toLowerCase());
+
+      if (!matchesSearch) return false;
+      if (urgencyFilter !== 'all' && a.urgencyLevel !== urgencyFilter) return false;
+      return true;
+    });
+  }, [analyses, searchTerm, urgencyFilter]);
+
+  // Priority #1 Store (Ranked first by the engine)
+  const priorityOneStore = analyses.length > 0 ? analyses[0] : null;
+
+  // Operational alerts breakdown
+  const stockShortageStores = useMemo(() => {
+    return analyses.filter(
+      a => a.store.inventoryAvailable === 0 || a.metrics.stockToSalesRatio < 0.35
+    );
+  }, [analyses]);
+
+  const highWastageStores = useMemo(() => {
+    return analyses.filter(a => a.metrics.wastageRate > 6);
+  }, [analyses]);
+
+  const delayedDeliveryStores = useMemo(() => {
+    return analyses.filter(
+      a =>
+        a.store.purchaseOrderStatus === 'Delayed' ||
+        a.store.purchaseOrderStatus === 'Critical Delay'
+    );
+  }, [analyses]);
+
+  const handleSelectStore = (storeId: string) => {
+    setSelectedStoreId(storeId);
+    navigate('/store-details');
+  };
+
+  const sqlSeedText = `-- FreshPulse AI — Supabase Demo Record Seed Script
+-- Run this in your Supabase SQL Editor to populate demo records into products, inventory, and sales tables.
+
+INSERT INTO public.products (id, product_name, category, price, sku) VALUES
+(1, 'Organic Gala Apples 1kg', 'Produce', 3.99, 'SKU-APP-01'),
+(2, 'Fresh Whole Milk 1L', 'Dairy', 2.49, 'SKU-MLK-02'),
+(3, 'Whole Wheat Sliced Bread', 'Bakery', 2.99, 'SKU-BRD-03'),
+(4, 'Ripe Bananas Bunch 1kg', 'Produce', 1.99, 'SKU-BAN-04'),
+(5, 'Free Range Eggs 12pk', 'Dairy', 4.50, 'SKU-EGG-05')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.inventory (id, store_id, product_id, stock) VALUES
+(1, 1, 1, 120),
+(2, 1, 2, 45),
+(3, 1, 3, 80),
+(4, 1, 4, 15),
+(5, 1, 5, 200)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.sales (id, store_id, product_id, sale_date) VALUES
+(1, 1, 1, NOW() - INTERVAL '1 day'),
+(2, 1, 2, NOW() - INTERVAL '1 day'),
+(3, 1, 3, NOW() - INTERVAL '2 days'),
+(4, 1, 4, NOW() - INTERVAL '1 day'),
+(5, 1, 5, NOW() - INTERVAL '1 day')
+ON CONFLICT (id) DO NOTHING;`;
+
+  const copySqlToClipboard = () => {
+    navigator.clipboard.writeText(sqlSeedText);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2000);
+  };
+
+  // EMPTY STATE (Section 1 & 3 requirement)
+  if (!isDataLoaded || analyses.length === 0) {
+    return (
+      <div className="max-w-3xl mx-auto py-12 px-4 space-y-6">
+        <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xs p-8 sm:p-12 text-center">
+          <div className="w-12 h-12 rounded-2xl bg-teal-50 border border-teal-200 text-teal-600 flex items-center justify-center mx-auto mb-5 font-bold text-xl">
+            FP
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight mb-2">
+            FreshPulse Store Operations
+          </h2>
+          <p className="text-base font-medium text-slate-600 mb-2">
+            Turn your store data into clear daily decisions.
+          </p>
+          <p className="text-xs sm:text-sm text-slate-500 max-w-lg mx-auto mb-8 leading-relaxed">
+            Prioritize which store to investigate first, identify root causes backed by empirical data, estimate business loss, and execute concrete operational recommendations.
+          </p>
+
+          {/* Error Banner if Supabase connection failed */}
+          {supabaseError && (
+            <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs font-medium text-left flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <strong>Supabase Error:</strong> {supabaseError}
+              </div>
+            </div>
+          )}
+
+          {/* Primary Action Buttons */}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-lg mx-auto mb-8">
+            <button
+              onClick={() => loadSupabaseData()}
+              disabled={isLoadingSupabase}
+              className="w-full sm:w-auto flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer"
+            >
+              {isLoadingSupabase ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+              ) : (
+                <Database className="w-4 h-4" />
+              )}
+              Fetch Supabase Database
+            </button>
+
+            <button
+              onClick={() => navigate('/analyze')}
+              className="w-full sm:w-auto flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer"
+            >
+              <FileEdit className="w-4 h-4" />
+              Manual Input Form
+            </button>
+          </div>
+
+          {/* Optional Sample Data Button */}
+          <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            <p className="text-slate-400">Want to preview the decision-support dashboard with example data?</p>
+            <button
+              onClick={loadDemoData}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-semibold cursor-pointer transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+              Load Demo Data
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Chart data from active user stores
+  const chartData = analyses.map(a => ({
+    name: a.store.storeName.length > 14 ? `${a.store.storeName.slice(0, 12)}…` : a.store.storeName,
+    storeId: a.store.storeId,
+    sales: a.store.totalSales,
+    footfall: a.store.footfall,
+    orders: a.store.transactions,
+    stockCoverage: Number(a.metrics.stockToSalesRatio.toFixed(2)),
+    wastagePct: Number(a.metrics.wastageRate.toFixed(1))
+  }));
+
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* Live Supabase Connection Banner */}
+      {isSupabaseData && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-3 text-xs text-emerald-950">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Database className="w-4 h-4 text-emerald-600 shrink-0" />
+              <div>
+                <strong>Connected to Supabase PostgreSQL Database.</strong> Real records fetched from database tables.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadSupabaseData()}
+                disabled={isLoadingSupabase}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSupabase ? 'animate-spin' : ''}`} />
+                Refresh DB Data
+              </button>
+              <button
+                onClick={() => setShowSqlSeedModal(true)}
+                className="px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-800 hover:bg-emerald-100 font-semibold text-xs cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <Code2 className="w-3.5 h-3.5 text-emerald-700" />
+                Demo Seed SQL
+              </button>
+            </div>
+          </div>
+
+          {/* Table Row Counts */}
+          {supabaseTableCounts && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-emerald-200/80 font-mono text-[11px]">
+              <div className="bg-white/80 px-2.5 py-1 rounded border border-emerald-200">
+                <span className="text-slate-500 font-sans">stores: </span>
+                <strong className="text-emerald-800">{supabaseTableCounts.stores} rows</strong>
+              </div>
+              <div className="bg-white/80 px-2.5 py-1 rounded border border-emerald-200">
+                <span className="text-slate-500 font-sans">products: </span>
+                <strong className={supabaseTableCounts.products === 0 ? 'text-amber-700' : 'text-emerald-800'}>
+                  {supabaseTableCounts.products} rows
+                </strong>
+              </div>
+              <div className="bg-white/80 px-2.5 py-1 rounded border border-emerald-200">
+                <span className="text-slate-500 font-sans">inventory: </span>
+                <strong className={supabaseTableCounts.inventory === 0 ? 'text-amber-700' : 'text-emerald-800'}>
+                  {supabaseTableCounts.inventory} rows
+                </strong>
+              </div>
+              <div className="bg-white/80 px-2.5 py-1 rounded border border-emerald-200">
+                <span className="text-slate-500 font-sans">sales: </span>
+                <strong className={supabaseTableCounts.sales === 0 ? 'text-amber-700' : 'text-emerald-800'}>
+                  {supabaseTableCounts.sales} rows
+                </strong>
+              </div>
+            </div>
+          )}
+
+          {/* Empty Tables Warning Notice if products/inventory/sales are empty */}
+          {supabaseTableCounts && (supabaseTableCounts.products === 0 || supabaseTableCounts.inventory === 0 || supabaseTableCounts.sales === 0) && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 flex items-start gap-2">
+              <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold">Notice:</span> Some Supabase tables (<code className="font-mono bg-amber-100 px-1 py-0.5 rounded">products</code>, <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">inventory</code>, or <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">sales</code>) currently contain 0 rows in your database. Store metadata from <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">stores</code> is displayed above. Click <strong>Demo Seed SQL</strong> to get non-sensitive SQL insert queries to populate demo items in Supabase.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Illustrative Sample Data Alert Banner */}
+      {isSampleData && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900">
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>
+              <strong>Currently viewing synthetic demonstration data.</strong> Clear this illustrative data or connect to your Supabase database anytime.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={() => loadSupabaseData()}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs cursor-pointer inline-flex items-center gap-1.5"
+            >
+              <Database className="w-3.5 h-3.5" />
+              Fetch Supabase DB
+            </button>
+            <button
+              onClick={clearAnalysis}
+              className="px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 text-xs font-medium cursor-pointer"
+            >
+              Reset Demo
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SQL Seed Modal */}
+      {showSqlSeedModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-2xl w-full p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Code2 className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-900 text-base">
+                  Supabase Demo Record SQL Seed Script
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowSqlSeedModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold p-1 rounded-lg hover:bg-slate-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Copy and execute these SQL statements in your <strong>Supabase Dashboard &gt; SQL Editor</strong> to populate demo items into your <code className="font-mono bg-slate-100 px-1 rounded">products</code>, <code className="font-mono bg-slate-100 px-1 rounded">inventory</code>, and <code className="font-mono bg-slate-100 px-1 rounded">sales</code> PostgreSQL tables:
+            </p>
+
+            <pre className="bg-slate-900 text-slate-100 font-mono text-[11px] p-4 rounded-xl overflow-x-auto max-h-64">
+              {sqlSeedText}
+            </pre>
+
+            <div className="flex items-center justify-between pt-2">
+              <button
+                onClick={copySqlToClipboard}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-xl cursor-pointer transition-colors"
+              >
+                {copiedSql ? <Check className="w-4 h-4" /> : <Code2 className="w-4 h-4" />}
+                {copiedSql ? 'Copied to Clipboard!' : 'Copy SQL Script'}
+              </button>
+
+              <button
+                onClick={() => setShowSqlSeedModal(false)}
+                className="px-4 py-2 border border-slate-300 text-slate-700 hover:bg-slate-50 font-semibold text-xs rounded-xl cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* HERO SECTION: PRIORITY #1 STORE TO INVESTIGATE FIRST */}
+      {priorityOneStore && (
+        <section className="bg-linear-to-br from-slate-900 via-slate-900 to-slate-950 rounded-2xl border border-slate-800 p-6 sm:p-7 text-white shadow-lg space-y-6">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+            <div className="space-y-1.5">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/20 border border-red-500/40 text-red-300 text-xs font-bold tracking-wide uppercase">
+                <Target className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                Priority #1 Store to Investigate First
+              </div>
+              <div className="flex flex-wrap items-baseline gap-3">
+                <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+                  {priorityOneStore.store.storeName}
+                </h2>
+                <span className="font-mono text-sm px-2.5 py-0.5 rounded bg-slate-800 font-bold text-teal-300">
+                  {priorityOneStore.store.storeId}
+                </span>
+                <span className="text-xs text-slate-400">
+                  {priorityOneStore.store.location} • Report Date: {priorityOneStore.store.analysisDate}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">
+                  Risk Priority Score
+                </div>
+                <div className="text-3xl font-black font-mono text-red-400">
+                  {priorityOneStore.priorityScore}
+                  <span className="text-sm text-slate-500 font-normal">/100</span>
+                </div>
+                <div className="text-[11px] font-bold text-red-300 uppercase">
+                  {priorityOneStore.urgencyLevel} Urgency
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleSelectStore(priorityOneStore.store.storeId)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 bg-teal-500 hover:bg-teal-400 text-slate-950 rounded-xl text-xs font-bold shadow-md hover:shadow-teal-500/20 transition-all cursor-pointer"
+              >
+                Investigate Details
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 text-xs">
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                1. Main Problem Detected
+              </div>
+              <p className="text-slate-100 font-medium leading-relaxed">
+                {priorityOneStore.mainProblem}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-teal-400 flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-teal-400" />
+                2. Supporting Data Evidence
+              </div>
+              <p className="text-slate-200 font-mono text-[11px] leading-relaxed">
+                {priorityOneStore.primaryEvidence}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-rose-400 flex items-center gap-1.5">
+                <Flame className="w-3.5 h-3.5 text-rose-400" />
+                3. Why Most Urgent in Network
+              </div>
+              <p className="text-slate-200 leading-relaxed">
+                {priorityOneStore.coreAnswers.q4WhyMoreUrgent}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-red-400 flex items-center gap-1.5">
+                <DollarSign className="w-3.5 h-3.5 text-red-400" />
+                4. Estimated Business Loss Impact
+              </div>
+              <p className="text-slate-100 font-medium leading-relaxed">
+                <strong className="text-red-300 font-bold">{priorityOneStore.businessImpact.formattedLoss}</strong>: {priorityOneStore.businessImpact.description}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+                5. Recommended First Action
+              </div>
+              <p className="text-slate-200 leading-relaxed">
+                <strong className="text-white">{priorityOneStore.firstAction.title}:</strong> {priorityOneStore.firstAction.concreteStep}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                6. What Manager Must Monitor
+              </div>
+              <p className="text-slate-200 leading-relaxed">
+                {priorityOneStore.firstAction.monitoringMetrics.join(' • ')}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* RANKED STORES PRIORITY LIST */}
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-teal-600" />
+              <h3 className="text-base font-bold text-slate-900 tracking-tight">
+                Ranked Stores Priority List ({filteredAnalyses.length})
+              </h3>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Stores automatically ranked from most urgent to lowest risk based on actual data evidence.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search store or problem..."
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 w-52 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              />
+            </div>
+
+            <select
+              value={urgencyFilter}
+              onChange={e => setUrgencyFilter(e.target.value as any)}
+              className="text-xs border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500 bg-white"
+            >
+              <option value="all">All Urgencies</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 tracking-wider">
+              <tr>
+                <th className="px-3.5 py-3 w-14 text-center">Rank</th>
+                <th className="px-3.5 py-3">Store</th>
+                <th className="px-3.5 py-3">Urgency & Score</th>
+                <th className="px-3.5 py-3">Main Problem</th>
+                <th className="px-3.5 py-3">Supporting Evidence</th>
+                <th className="px-3.5 py-3">Business Impact</th>
+                <th className="px-3.5 py-3">Recommended First Action</th>
+                <th className="px-3.5 py-3">Why Ranked Here</th>
+                <th className="px-3.5 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredAnalyses.map(analysis => {
+                const s = analysis.store;
+                const isRankOne = analysis.rank === 1;
+
+                return (
+                  <tr
+                    key={s.storeId}
+                    onClick={() => handleSelectStore(s.storeId)}
+                    className={`hover:bg-slate-50/90 transition-colors cursor-pointer ${
+                      isRankOne ? 'bg-red-50/30' : ''
+                    }`}
+                  >
+                    <td className="px-3.5 py-3 text-center">
+                      <span
+                        className={`inline-flex items-center justify-center w-7 h-7 rounded-lg font-black font-mono text-xs ${
+                          analysis.rank === 1
+                            ? 'bg-red-600 text-white shadow-xs'
+                            : analysis.rank === 2
+                            ? 'bg-amber-500 text-white'
+                            : analysis.rank === 3
+                            ? 'bg-amber-100 text-amber-900 font-bold'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        #{analysis.rank}
+                      </span>
+                    </td>
+
+                    <td className="px-3.5 py-3">
+                      <div className="font-bold text-slate-900 hover:text-teal-700 flex items-center gap-1.5">
+                        {s.storeName}
+                      </div>
+                      <div className="font-mono text-[11px] text-teal-800 font-semibold">{s.storeId}</div>
+                      <div className="text-[11px] text-slate-400">{s.location}</div>
+                    </td>
+
+                    <td className="px-3.5 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-black text-sm text-slate-900">
+                          {analysis.priorityScore}
+                          <span className="text-[10px] text-slate-400 font-normal">/100</span>
+                        </span>
+                        <Badge
+                          variant={
+                            analysis.urgencyLevel === 'Critical'
+                              ? 'critical'
+                              : analysis.urgencyLevel === 'High'
+                              ? 'high'
+                              : analysis.urgencyLevel === 'Medium'
+                              ? 'medium'
+                              : 'neutral'
+                          }
+                          size="sm"
+                        >
+                          {analysis.urgencyLevel}
+                        </Badge>
+                      </div>
+                    </td>
+
+                    <td className="px-3.5 py-3 max-w-xs">
+                      <p className="font-medium text-slate-900 line-clamp-2">
+                        {analysis.mainProblem}
+                      </p>
+                    </td>
+
+                    <td className="px-3.5 py-3 max-w-xs">
+                      <p className="font-mono text-[11px] text-slate-600 line-clamp-2">
+                        {analysis.primaryEvidence}
+                      </p>
+                    </td>
+
+                    <td className="px-3.5 py-3 whitespace-nowrap">
+                      <span className={`font-mono font-bold text-xs ${
+                        analysis.businessImpact.severity === 'critical'
+                          ? 'text-red-700 bg-red-50 px-2 py-0.5 rounded'
+                          : analysis.businessImpact.severity === 'high'
+                          ? 'text-amber-700 bg-amber-50 px-2 py-0.5 rounded'
+                          : 'text-slate-700'
+                      }`}>
+                        {analysis.businessImpact.formattedLoss}
+                      </span>
+                    </td>
+
+                    <td className="px-3.5 py-3 max-w-xs">
+                      <p className="text-slate-800 font-semibold line-clamp-1">
+                        {analysis.firstAction.title}
+                      </p>
+                      <p className="text-[11px] text-slate-500 line-clamp-1">
+                        {analysis.firstAction.concreteStep}
+                      </p>
+                    </td>
+
+                    <td className="px-3.5 py-3 max-w-xs text-[11px] text-slate-600 leading-tight">
+                      <p className="line-clamp-2">
+                        {analysis.rankExplanation}
+                      </p>
+                    </td>
+
+                    <td className="px-3.5 py-3 text-right whitespace-nowrap">
+                      <button
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleSelectStore(s.storeId);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-teal-600 text-white text-xs font-semibold transition-colors cursor-pointer"
+                      >
+                        Investigate
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* KEY NETWORK METRICS */}
+      <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="text-xs font-medium text-slate-500 mb-1 flex items-center justify-between">
+            <span>Total Sales</span>
+            <DollarSign className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className="text-lg sm:text-xl font-bold text-slate-900 font-mono">
+            ${networkSummary.totalSales.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">{networkSummary.totalStores} store{networkSummary.totalStores !== 1 ? 's' : ''}</div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="text-xs font-medium text-slate-500 mb-1 flex items-center justify-between">
+            <span>Transactions</span>
+            <ShoppingCart className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className="text-lg sm:text-xl font-bold text-slate-900 font-mono">
+            {networkSummary.totalTransactions.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">Orders checked out</div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="text-xs font-medium text-slate-500 mb-1 flex items-center justify-between">
+            <span>Footfall Traffic</span>
+            <Users className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className="text-lg sm:text-xl font-bold text-slate-900 font-mono">
+            {networkSummary.totalFootfall.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">
+            {networkSummary.averageConversionRate}% avg conversion
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="text-xs font-medium text-slate-500 mb-1 flex items-center justify-between">
+            <span>Available Stock</span>
+            <Package className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className="text-lg sm:text-xl font-bold text-slate-900 font-mono">
+            {networkSummary.totalAvailableStock.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">Units on hand</div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="text-xs font-medium text-slate-500 mb-1 flex items-center justify-between">
+            <span>Wastage Volume</span>
+            <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className={`text-lg sm:text-xl font-bold font-mono ${networkSummary.totalWastageUnits > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+            {networkSummary.totalWastageUnits.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">Units spoiled</div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+          <div className="text-xs font-medium text-slate-500 mb-1 flex items-center justify-between">
+            <span>Delayed Deliveries</span>
+            <Truck className="w-3.5 h-3.5 text-slate-400" />
+          </div>
+          <div className={`text-lg sm:text-xl font-bold font-mono ${delayedDeliveryStores.length > 0 ? 'text-red-600' : 'text-slate-900'}`}>
+            {delayedDeliveryStores.length}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-1">Pending shipments</div>
+        </div>
+      </section>
+
+      {/* OPERATIONAL ALERT PANELS */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-red-50 text-red-600 flex items-center justify-center font-bold text-xs">
+                !
+              </div>
+              <h3 className="font-bold text-slate-900 text-sm">Stock Shortages</h3>
+            </div>
+            <span className="text-xs font-bold font-mono text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
+              {stockShortageStores.length} store{stockShortageStores.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {stockShortageStores.length === 0 ? (
+            <p className="text-xs text-slate-500 pt-2">All stores maintain adequate stock coverage.</p>
+          ) : (
+            <div className="space-y-2 pt-1">
+              {stockShortageStores.map(a => (
+                <div
+                  key={a.store.storeId}
+                  onClick={() => handleSelectStore(a.store.storeId)}
+                  className="p-2.5 rounded-lg bg-red-50/50 hover:bg-red-50 border border-red-100 flex items-center justify-between text-xs cursor-pointer transition-colors"
+                >
+                  <div>
+                    <div className="font-semibold text-slate-900">{a.store.storeName}</div>
+                    <div className="text-[11px] text-slate-500">
+                      Available: {a.store.inventoryAvailable} units ({a.metrics.stockToSalesRatio.toFixed(2)}x coverage)
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-xs">
+                W
+              </div>
+              <h3 className="font-bold text-slate-900 text-sm">Wastage Alerts</h3>
+            </div>
+            <span className="text-xs font-bold font-mono text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+              {highWastageStores.length} store{highWastageStores.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {highWastageStores.length === 0 ? (
+            <p className="text-xs text-slate-500 pt-2">Wastage rates across all stores are below threshold (&lt;6%).</p>
+          ) : (
+            <div className="space-y-2 pt-1">
+              {highWastageStores.map(a => (
+                <div
+                  key={a.store.storeId}
+                  onClick={() => handleSelectStore(a.store.storeId)}
+                  className="p-2.5 rounded-lg bg-amber-50/50 hover:bg-amber-50 border border-amber-100 flex items-center justify-between text-xs cursor-pointer transition-colors"
+                >
+                  <div>
+                    <div className="font-semibold text-slate-900">{a.store.storeName}</div>
+                    <div className="text-[11px] text-slate-500">
+                      Wastage Rate: {a.metrics.wastageRate.toFixed(1)}% ({a.store.wastageQuantity} units)
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-xs">
+                <Truck className="w-3.5 h-3.5" />
+              </div>
+              <h3 className="font-bold text-slate-900 text-sm">Delayed Deliveries</h3>
+            </div>
+            <span className="text-xs font-bold font-mono text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+              {delayedDeliveryStores.length} order{delayedDeliveryStores.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {delayedDeliveryStores.length === 0 ? (
+            <p className="text-xs text-slate-500 pt-2">All supplier purchase orders are on time or delivered.</p>
+          ) : (
+            <div className="space-y-2 pt-1">
+              {delayedDeliveryStores.map(a => (
+                <div
+                  key={a.store.storeId}
+                  onClick={() => handleSelectStore(a.store.storeId)}
+                  className="p-2.5 rounded-lg bg-indigo-50/50 hover:bg-indigo-50 border border-indigo-100 flex items-center justify-between text-xs cursor-pointer transition-colors"
+                >
+                  <div>
+                    <div className="font-semibold text-slate-900">{a.store.storeName}</div>
+                    <div className="text-[11px] text-slate-500">
+                      Status: {a.store.purchaseOrderStatus}
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-400" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* CHARTS */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Store Sales & Customer Footfall</h3>
+              <p className="text-[11px] text-slate-500">Comparing recorded sales ($) and visitor traffic</p>
+            </div>
+            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium">
+              {isSupabaseData ? 'Supabase Live' : 'Live Data'}
+            </span>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#0f172a',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    fontSize: '12px'
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                <Bar dataKey="sales" name="Sales ($)" fill="#0d9488" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="footfall" name="Footfall (Visitors)" fill="#0284c7" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Inventory Coverage & Wastage Rate</h3>
+              <p className="text-[11px] text-slate-500">Days of stock coverage vs. percentage of produce wasted</p>
+            </div>
+            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium">
+              Efficiency
+            </span>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#0f172a',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    fontSize: '12px'
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
+                <Bar dataKey="stockCoverage" name="Stock Coverage (x)" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="wastagePct" name="Wastage Rate (%)" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+};
+
+===== src\components\pages\AnalyzeStorePage.tsx =====
+import React, { useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  FileEdit,
+  UploadCloud,
+  Save,
+  Play,
+  RotateCcw,
+  Trash2,
+  Edit2,
+  CheckCircle2,
+  AlertTriangle,
+  Download,
+  Database,
+  RefreshCw,
+  ArrowRight,
+  Sparkles,
+  Info,
+  Clock,
+  Check
+} from 'lucide-react';
+import { useStoreData } from '../../context/StoreDataContext';
+import {
+  validateStoreInput,
+  parseStoreCSV,
+  getStoreCSVHeaderTemplate,
+  VALID_PO_STATUSES
+} from '../../engine/validator';
+import { StoreRecord, POStatus } from '../../types';
+
+export const AnalyzeStorePage: React.FC = () => {
+  const navigate = useNavigate();
+  const {
+    savedStores,
+    addStore,
+    modifyStore,
+    removeStore,
+    runAnalysis,
+    loadDemoData,
+    loadSupabaseData,
+    isLoadingSupabase,
+    supabaseError,
+    isAnalyzing
+  } = useStoreData();
+
+  // Active sub-tab: 'form' | 'csv'
+  const [activeTab, setActiveTab] = useState<'form' | 'csv'>('form');
+
+  // Editing state (if editing an existing saved store)
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editingStoreId, setEditingStoreId] = useState<string | null>(null);
+
+  // Form State
+  const initialFormState: Partial<StoreRecord> = {
+    storeId: '',
+    storeName: '',
+    location: '',
+    analysisDate: new Date().toISOString().split('T')[0],
+    totalSales: undefined,
+    transactions: undefined,
+    footfall: undefined,
+    inventoryAvailable: undefined,
+    inventorySold: undefined,
+    wastageQuantity: undefined,
+    purchaseOrderStatus: 'On Time' as POStatus,
+    staffCount: undefined,
+    complianceScore: undefined,
+    notes: ''
+  };
+
+  const [formData, setFormData] = useState<Partial<StoreRecord>>(initialFormState);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [notification, setNotification] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
+  // Selection of saved stores for batch analysis
+  const [selectedForAnalysis, setSelectedForAnalysis] = useState<string[]>([]);
+
+  // CSV State
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [csvUploadState, setCsvUploadState] = useState<{
+    file: File;
+    parsedStores: StoreRecord[];
+    issues: Array<{ row: number; field: string; message: string }>;
+    validCount: number;
+    totalCount: number;
+  } | null>(null);
+
+  // Input Change Handler
+  const handleInputChange = (field: keyof StoreRecord, value: string) => {
+    if (formErrors[field]) {
+      setFormErrors(prev => {
+        const copy = { ...prev };
+        delete copy[field];
+        return copy;
+      });
+    }
+
+    if (
+      [
+        'totalSales',
+        'transactions',
+        'footfall',
+        'inventoryAvailable',
+        'inventorySold',
+        'wastageQuantity',
+        'staffCount',
+        'complianceScore'
+      ].includes(field)
+    ) {
+      const num = value === '' ? undefined : Number(value);
+      setFormData(prev => ({ ...prev, [field]: num }));
+    } else {
+      setFormData(prev => ({ ...prev, [field]: value }));
+    }
+  };
+
+  // 1. SAVE STORE BUTTON HANDLER
+  const handleSaveStore = (e: React.FormEvent) => {
+    e.preventDefault();
+    setNotification(null);
+
+    const validation = validateStoreInput(formData);
+    if (!validation.isValid || !validation.record) {
+      setFormErrors(validation.errors);
+      setNotification({
+        type: 'error',
+        message: 'Please resolve the highlighted validation errors before saving.'
+      });
+      return;
+    }
+
+    if (isEditing && editingStoreId) {
+      // Update existing
+      const result = modifyStore(validation.record);
+      if (result.success) {
+        setNotification({ type: 'success', message: result.message });
+        setIsEditing(false);
+        setEditingStoreId(null);
+        setFormData(initialFormState);
+      } else {
+        setNotification({ type: 'error', message: result.message });
+      }
+    } else {
+      // Add new store
+      const result = addStore(validation.record);
+      if (result.success) {
+        setNotification({ type: 'success', message: result.message });
+        // Clear form after successful save
+        setFormData(initialFormState);
+        setFormErrors({});
+      } else {
+        setNotification({ type: 'error', message: result.message });
+      }
+    }
+  };
+
+  // 2. ANALYZE STORE BUTTON HANDLER (Form Input)
+  const handleAnalyzeCurrentForm = async () => {
+    setNotification(null);
+    const validation = validateStoreInput(formData);
+    if (!validation.isValid || !validation.record) {
+      setFormErrors(validation.errors);
+      setNotification({
+        type: 'error',
+        message: 'Please provide valid store information before analyzing.'
+      });
+      return;
+    }
+
+    const success = await runAnalysis([validation.record], false);
+    if (success) {
+      navigate('/dashboard');
+    } else {
+      setNotification({
+        type: 'error',
+        message: 'Analysis calculation failed. Please verify inputs.'
+      });
+    }
+  };
+
+  // 3. ANALYZE SELECTED SAVED STORES
+  const handleAnalyzeSelectedSaved = async () => {
+    const storesToAnalyze = savedStores.filter(s => selectedForAnalysis.includes(s.storeId));
+    if (storesToAnalyze.length === 0) {
+      setNotification({
+        type: 'error',
+        message: 'Please select at least one saved store to analyze.'
+      });
+      return;
+    }
+
+    const success = await runAnalysis(storesToAnalyze, false);
+    if (success) {
+      navigate('/dashboard');
+    }
+  };
+
+  // 4. ANALYZE SINGLE SAVED STORE DIRECTLY
+  const handleAnalyzeSingleSaved = async (store: StoreRecord) => {
+    const success = await runAnalysis([store], false);
+    if (success) {
+      navigate('/dashboard');
+    }
+  };
+
+  // 5. LOAD STORE INTO FORM FOR EDITING
+  const handleEditSavedStore = (store: StoreRecord) => {
+    setFormData(store);
+    setIsEditing(true);
+    setEditingStoreId(store.storeId);
+    setFormErrors({});
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // 6. DELETE SAVED STORE
+  const handleDeleteSavedStore = (storeId: string) => {
+    if (window.confirm(`Delete store ID "${storeId}" from saved records?`)) {
+      const res = removeStore(storeId);
+      setNotification({
+        type: res.success ? 'success' : 'error',
+        message: res.message
+      });
+      setSelectedForAnalysis(prev => prev.filter(id => id !== storeId));
+      if (editingStoreId === storeId) {
+        setIsEditing(false);
+        setEditingStoreId(null);
+        setFormData(initialFormState);
+      }
+    }
+  };
+
+  // 7. RESET FORM
+  const handleResetForm = () => {
+    setFormData(initialFormState);
+    setFormErrors({});
+    setIsEditing(false);
+    setEditingStoreId(null);
+    setNotification(null);
+  };
+
+  // 8. CSV FILE HANDLING
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const text = evt.target?.result as string;
+      if (!text) return;
+
+      const { records, summary } = parseStoreCSV(text);
+      setCsvUploadState({
+        file,
+        parsedStores: records,
+        issues: summary.issues,
+        validCount: records.length,
+        totalCount: summary.totalRows
+      });
+    };
+    reader.readAsText(file);
+  };
+
+  // Save parsed CSV rows to Saved Stores
+  const handleSaveCSVRounds = () => {
+    if (!csvUploadState || csvUploadState.parsedStores.length === 0) return;
+    let addedCount = 0;
+    csvUploadState.parsedStores.forEach(s => {
+      const res = addStore(s);
+      if (res.success) addedCount++;
+    });
+
+    setNotification({
+      type: 'success',
+      message: `Saved ${addedCount} stores from CSV to your saved stores list.`
+    });
+    setCsvUploadState(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Analyze parsed CSV directly
+  const handleAnalyzeCSVDirect = async () => {
+    if (!csvUploadState || csvUploadState.parsedStores.length === 0) return;
+    const success = await runAnalysis(csvUploadState.parsedStores, false);
+    if (success) {
+      navigate('/dashboard');
+    }
+  };
+
+  // Download template
+  const handleDownloadTemplate = () => {
+    const csvContent = getStoreCSVHeaderTemplate();
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'freshpulse_store_template.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto">
+      {/* Top Header Card */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
+              Analyze Your Store
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1">
+              Enter your store data or load directly from Supabase PostgreSQL database.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={async () => {
+                const success = await loadSupabaseData();
+                if (success) navigate('/dashboard');
+              }}
+              disabled={isLoadingSupabase}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer transition-colors shadow-xs"
+            >
+              {isLoadingSupabase ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+              ) : (
+                <Database className="w-3.5 h-3.5" />
+              )}
+              Fetch Supabase DB
+            </button>
+
+            <button
+              onClick={async () => {
+                const success = await loadDemoData();
+                if (success) navigate('/dashboard');
+              }}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 text-xs font-semibold cursor-pointer transition-colors"
+              title="Load illustrative demo stores for testing"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+              Load Demo Data
+            </button>
+          </div>
+        </div>
+
+        {/* Global Notification Banner */}
+        {supabaseError && (
+          <div className="mt-4 p-3 rounded-xl border border-red-200 bg-red-50 text-red-800 text-xs font-semibold flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>Supabase Error: {supabaseError}</span>
+          </div>
+        )}
+
+        {/* Global Notification Banner */}
+        {notification && (
+          <div
+            className={`mt-4 p-3 rounded-xl border text-xs font-semibold flex items-center gap-2.5 ${
+              notification.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-red-50 border-red-200 text-red-800'
+            }`}
+          >
+            {notification.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            )}
+            <span>{notification.message}</span>
+          </div>
+        )}
+
+        {/* Loading Overlay state if analyzing */}
+        {isAnalyzing && (
+          <div className="mt-4 p-4 rounded-xl bg-teal-50 border border-teal-200 text-teal-900 text-xs font-semibold flex items-center gap-3">
+            <span className="w-4 h-4 rounded-full border-2 border-teal-600 border-t-transparent animate-spin" />
+            <span>Analyzing store data... Evaluating buffer coverage, spoilage, and operational risks.</span>
+          </div>
+        )}
+      </div>
+
+      {/* TABS: MANUAL INPUT vs CSV UPLOAD */}
+      <div className="flex border-b border-slate-200 gap-3">
+        <button
+          onClick={() => setActiveTab('form')}
+          className={`py-2.5 px-4 text-xs font-semibold border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
+            activeTab === 'form'
+              ? 'border-teal-600 text-teal-700'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <FileEdit className="w-3.5 h-3.5" />
+          Manual Store Input Form
+        </button>
+        <button
+          onClick={() => setActiveTab('csv')}
+          className={`py-2.5 px-4 text-xs font-semibold border-b-2 flex items-center gap-2 cursor-pointer transition-colors ${
+            activeTab === 'csv'
+              ? 'border-teal-600 text-teal-700'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <UploadCloud className="w-3.5 h-3.5" />
+          CSV Upload Control
+        </button>
+      </div>
+
+      {/* TAB 1: MANUAL STORE FORM */}
+      {activeTab === 'form' && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-6">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <h2 className="text-sm font-bold text-slate-900">
+              {isEditing ? `Edit Store: ${formData.storeId}` : 'Enter Store Operational Data'}
+            </h2>
+            {isEditing && (
+              <span className="text-xs bg-amber-50 text-amber-800 px-2 py-0.5 rounded font-semibold border border-amber-200">
+                Editing Mode
+              </span>
+            )}
+          </div>
+
+          <form onSubmit={handleSaveStore} noValidate className="space-y-6">
+            {/* Section 1: Store Information */}
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-teal-700 mb-3">
+                1. Store Identification
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Store ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. FP-101"
+                    disabled={isEditing}
+                    value={formData.storeId || ''}
+                    onChange={e => handleInputChange('storeId', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.storeId ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    } ${isEditing ? 'bg-slate-100 cursor-not-allowed' : ''}`}
+                    required
+                  />
+                  {formErrors.storeId && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.storeId}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Store Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Downtown Central"
+                    value={formData.storeName || ''}
+                    onChange={e => handleInputChange('storeName', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.storeName ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.storeName && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.storeName}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Location <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Metro Concourse"
+                    value={formData.location || ''}
+                    onChange={e => handleInputChange('location', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.location ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.location && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.location}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Analysis Date <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.analysisDate || ''}
+                    onChange={e => handleInputChange('analysisDate', e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500"
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Sales & Customer Footfall */}
+            <div className="pt-4 border-t border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-teal-700 mb-3">
+                2. Sales & Customer Traffic
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Total Sales ($) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={formData.totalSales !== undefined ? formData.totalSales : ''}
+                    onChange={e => handleInputChange('totalSales', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.totalSales ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.totalSales && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.totalSales}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Transactions <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={formData.transactions !== undefined ? formData.transactions : ''}
+                    onChange={e => handleInputChange('transactions', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.transactions ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.transactions && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.transactions}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Customer Footfall <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={formData.footfall !== undefined ? formData.footfall : ''}
+                    onChange={e => handleInputChange('footfall', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.footfall ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.footfall && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.footfall}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Section 3: Inventory & Wastage */}
+            <div className="pt-4 border-t border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-teal-700 mb-3">
+                3. Inventory & Wastage (Units)
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Inventory Available (Units) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={formData.inventoryAvailable !== undefined ? formData.inventoryAvailable : ''}
+                    onChange={e => handleInputChange('inventoryAvailable', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.inventoryAvailable ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.inventoryAvailable && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.inventoryAvailable}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Inventory Sold (Units) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={formData.inventorySold !== undefined ? formData.inventorySold : ''}
+                    onChange={e => handleInputChange('inventorySold', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.inventorySold ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.inventorySold && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.inventorySold}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Wastage Quantity (Units) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={formData.wastageQuantity !== undefined ? formData.wastageQuantity : ''}
+                    onChange={e => handleInputChange('wastageQuantity', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.wastageQuantity ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.wastageQuantity && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.wastageQuantity}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Section 4: Operations & Logistics */}
+            <div className="pt-4 border-t border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-teal-700 mb-3">
+                4. Operations, Logistics & Compliance
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Purchase Order Delivery Status <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={formData.purchaseOrderStatus || 'On Time'}
+                    onChange={e => handleInputChange('purchaseOrderStatus', e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 bg-white"
+                  >
+                    {VALID_PO_STATUSES.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Staff Count <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="4"
+                    value={formData.staffCount !== undefined ? formData.staffCount : ''}
+                    onChange={e => handleInputChange('staffCount', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.staffCount ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.staffCount && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.staffCount}</span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Compliance Score (0–100) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    placeholder="85"
+                    value={formData.complianceScore !== undefined ? formData.complianceScore : ''}
+                    onChange={e => handleInputChange('complianceScore', e.target.value)}
+                    className={`w-full px-3 py-2 border font-mono rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500 ${
+                      formErrors.complianceScore ? 'border-red-400 bg-red-50/40' : 'border-slate-300'
+                    }`}
+                    required
+                  />
+                  {formErrors.complianceScore && (
+                    <span className="text-red-600 text-[11px] mt-0.5 block">{formErrors.complianceScore}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* BUTTON BAR: SAVE STORE, ANALYZE STORE, RESET (Requirement Section 2) */}
+            <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={handleResetForm}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                Reset Form
+              </button>
+
+              <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+                {/* 1. SAVE STORE BUTTON */}
+                <button
+                  type="submit"
+                  onClick={handleSaveStore}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-xs transition-colors"
+                >
+                  <Save className="w-3.5 h-3.5 text-teal-400" />
+                  {isEditing ? 'Update Saved Store' : 'Save Store'}
+                </button>
+
+                {/* 2. ANALYZE STORE BUTTON */}
+                <button
+                  type="button"
+                  onClick={handleAnalyzeCurrentForm}
+                  disabled={isAnalyzing}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-6 py-2.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-xs transition-colors"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  {isAnalyzing ? 'Analyzing...' : 'Analyze Store'}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* TAB 2: CSV UPLOAD CONTROL */}
+      {activeTab === 'csv' && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-5">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Upload Store Operations CSV</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Parse multiple store records using Papa Parse.</p>
+            </div>
+            <button
+              onClick={handleDownloadTemplate}
+              className="inline-flex items-center gap-1.5 text-xs text-teal-700 hover:text-teal-900 font-semibold cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download CSV Template
+            </button>
+          </div>
+
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className="border-2 border-dashed border-slate-300 hover:border-teal-500 rounded-xl p-8 text-center cursor-pointer transition-colors bg-slate-50/50 hover:bg-teal-50/20"
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+            <UploadCloud className="w-10 h-10 text-teal-600 mx-auto mb-2" />
+            <p className="text-sm font-semibold text-slate-800">
+              Click to browse or drop your CSV file here
+            </p>
+            <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+              Headers: store_id, store_name, location, total_sales, transactions, footfall, inventory_available, inventory_sold, wastage_quantity, purchase_order_status
+            </p>
+          </div>
+
+          {/* Parsed CSV Review Section */}
+          {csvUploadState && (
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-3">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                <div>
+                  <span className="font-bold text-slate-900">{csvUploadState.file.name}</span>
+                  <div className="text-slate-500">
+                    {csvUploadState.validCount} valid records found out of {csvUploadState.totalCount} rows.
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleSaveCSVRounds}
+                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-semibold cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <Save className="w-3.5 h-3.5 text-teal-400" />
+                    Save to Saved Stores
+                  </button>
+                  <button
+                    onClick={handleAnalyzeCSVDirect}
+                    className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg font-semibold cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    Analyze Uploaded Stores
+                  </button>
+                </div>
+              </div>
+
+              {/* Parsed Stores Table Preview */}
+              <div className="max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 uppercase font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="px-3 py-2">ID</th>
+                      <th className="px-3 py-2">Store Name</th>
+                      <th className="px-3 py-2">Sales</th>
+                      <th className="px-3 py-2">Orders</th>
+                      <th className="px-3 py-2">Stock</th>
+                      <th className="px-3 py-2">Wastage</th>
+                      <th className="px-3 py-2">PO Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {csvUploadState.parsedStores.map(s => (
+                      <tr key={s.storeId}>
+                        <td className="px-3 py-1.5 font-bold text-teal-800">{s.storeId}</td>
+                        <td className="px-3 py-1.5 font-sans font-medium text-slate-900">{s.storeName}</td>
+                        <td className="px-3 py-1.5">${s.totalSales.toLocaleString()}</td>
+                        <td className="px-3 py-1.5">{s.transactions}</td>
+                        <td className="px-3 py-1.5">{s.inventoryAvailable}</td>
+                        <td className="px-3 py-1.5">{s.wastageQuantity}</td>
+                        <td className="px-3 py-1.5 font-sans">{s.purchaseOrderStatus}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SAVED STORES SECTION (Requirement Section 1 & 2) */}
+      <section className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <Database className="w-4 h-4 text-teal-600" />
+              Saved Stores ({savedStores.length})
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Persistent records in local browser storage. Select and click "Analyze Store" to generate report.
+            </p>
+          </div>
+
+          {savedStores.length > 0 && (
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <button
+                onClick={() => {
+                  if (selectedForAnalysis.length === savedStores.length) {
+                    setSelectedForAnalysis([]);
+                  } else {
+                    setSelectedForAnalysis(savedStores.map(s => s.storeId));
+                  }
+                }}
+                className="px-3 py-1.5 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg cursor-pointer"
+              >
+                {selectedForAnalysis.length === savedStores.length ? 'Deselect All' : 'Select All'}
+              </button>
+
+              <button
+                onClick={handleAnalyzeSelectedSaved}
+                disabled={selectedForAnalysis.length === 0 || isAnalyzing}
+                className="px-4 py-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg cursor-pointer shadow-xs inline-flex items-center gap-1.5"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                Analyze Selected ({selectedForAnalysis.length})
+              </button>
+            </div>
+          )}
+        </div>
+
+        {savedStores.length === 0 ? (
+          <div className="p-8 text-center bg-slate-50/70 rounded-xl border border-dashed border-slate-200">
+            <Info className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+            <h3 className="text-xs font-bold text-slate-700">No Saved Stores Yet</h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+              Use the manual form above and click "Save Store" or upload a CSV file to save your store records.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 text-slate-500 uppercase font-semibold border-b border-slate-200">
+                <tr>
+                  <th className="px-3 py-2.5 w-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedForAnalysis.length === savedStores.length && savedStores.length > 0}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setSelectedForAnalysis(savedStores.map(s => s.storeId));
+                        } else {
+                          setSelectedForAnalysis([]);
+                        }
+                      }}
+                      className="rounded accent-teal-600"
+                    />
+                  </th>
+                  <th className="px-3 py-2.5">Store ID</th>
+                  <th className="px-3 py-2.5">Store Name</th>
+                  <th className="px-3 py-2.5">Location</th>
+                  <th className="px-3 py-2.5">Sales</th>
+                  <th className="px-3 py-2.5">Orders</th>
+                  <th className="px-3 py-2.5">Stock</th>
+                  <th className="px-3 py-2.5">Wastage</th>
+                  <th className="px-3 py-2.5">PO Status</th>
+                  <th className="px-3 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {savedStores.map(store => {
+                  const isChecked = selectedForAnalysis.includes(store.storeId);
+
+                  return (
+                    <tr key={store.storeId} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-3 py-2.5">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={e => {
+                            if (e.target.checked) {
+                              setSelectedForAnalysis(prev => [...prev, store.storeId]);
+                            } else {
+                              setSelectedForAnalysis(prev => prev.filter(id => id !== store.storeId));
+                            }
+                          }}
+                          className="rounded accent-teal-600 cursor-pointer"
+                        />
+                      </td>
+
+                      <td className="px-3 py-2.5 font-mono font-bold text-teal-800">
+                        {store.storeId}
+                      </td>
+
+                      <td className="px-3 py-2.5 font-bold text-slate-900">
+                        {store.storeName}
+                      </td>
+
+                      <td className="px-3 py-2.5 text-slate-500">
+                        {store.location}
+                      </td>
+
+                      <td className="px-3 py-2.5 font-mono text-slate-800">
+                        ${store.totalSales.toLocaleString()}
+                      </td>
+
+                      <td className="px-3 py-2.5 font-mono text-slate-700">
+                        {store.transactions}
+                      </td>
+
+                      <td className="px-3 py-2.5 font-mono">
+                        <span className={store.inventoryAvailable === 0 ? 'text-red-600 font-bold' : 'text-slate-800'}>
+                          {store.inventoryAvailable}
+                        </span>
+                      </td>
+
+                      <td className="px-3 py-2.5 font-mono text-slate-700">
+                        {store.wastageQuantity}
+                      </td>
+
+                      <td className="px-3 py-2.5">
+                        <span className={`px-2 py-0.5 rounded text-[11px] font-medium ${
+                          store.purchaseOrderStatus === 'Critical Delay'
+                            ? 'bg-red-50 text-red-700 border border-red-200'
+                            : store.purchaseOrderStatus === 'Delayed'
+                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                            : 'bg-slate-100 text-slate-700'
+                        }`}>
+                          {store.purchaseOrderStatus}
+                        </span>
+                      </td>
+
+                      <td className="px-3 py-2.5 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleAnalyzeSingleSaved(store)}
+                            title="Analyze this store now"
+                            className="p-1 text-teal-700 hover:text-teal-900 hover:bg-teal-50 rounded cursor-pointer"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                          </button>
+                          <button
+                            onClick={() => handleEditSavedStore(store)}
+                            title="Edit store"
+                            className="p-1 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteSavedStore(store.storeId)}
+                            title="Delete store"
+                            className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+};
